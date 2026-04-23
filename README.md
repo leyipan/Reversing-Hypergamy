@@ -1,4 +1,4 @@
-# Marriage, Assortative Mating, and the Within-Couple Income Gap in China
+# Reversing Hypergamy? Education, Earning Power, and Partner Selection in China
 
 Replication code for my thesis on marriage patterns in China using the China Family Panel Studies (CFPS), 2010-2022. The project documents long-run trends in education assortative mating and spousal age gaps, estimates gender-specific Mincerian earnings functions, and decomposes the within-couple permanent-income gap into an age-at-marriage channel and a gender wage-gap channel.
 
