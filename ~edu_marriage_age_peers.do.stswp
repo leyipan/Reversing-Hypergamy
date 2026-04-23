@@ -1,0 +1,323 @@
+/*==============================================================================
+  EDUCATION REVERSAL AMONG MARRIAGE-AGE PEERS
+
+  Aim: Check whether the education gender reversal has reached the
+       marriage-age population — examining education levels of married
+       couples, using the annual marriage-age distribution to define peers.
+
+  Steps:
+    1. From cfps_couples_allwaves.dta, reshape to person-level and compute
+       the marriage-age distribution (p10–p90) for each marry_year × gender.
+    2. Keep "peers": individuals whose marriage age falls within that
+       p10–p90 range (middle 80%).
+    3. Tabulate education level (directly) of peers by marry_year and gender.
+
+  Data:
+    - cfps_couples_allwaves.dta  (all waves; marry_year + edu levels)
+
+  Prerequisites: Run master.do first (sets global paths).
+==============================================================================*/
+
+clear all
+set more off
+set maxvar 10000
+
+
+* =============================================================================
+* 1. LOAD AND RESHAPE TO PERSON-LEVEL
+* =============================================================================
+
+use "${work}/cfps_couples_allwaves.dta", clear
+
+keep wife_pid husband_pid marry_year ///
+     wife_edu husband_edu wife_birthy husband_birthy
+
+drop if missing(marry_year) | marry_year < 1960 | marry_year > 2022
+
+* ---- Wife observations (gender = 0) ----
+preserve
+    keep wife_pid marry_year wife_edu wife_birthy
+    rename wife_pid    pid
+    rename wife_edu    edu
+    rename wife_birthy birthy
+    gen byte gender = 0
+    tempfile wives
+    save `wives'
+restore
+
+* ---- Husband observations (gender = 1) ----
+keep husband_pid marry_year husband_edu husband_birthy
+rename husband_pid    pid
+rename husband_edu    edu
+rename husband_birthy birthy
+gen byte gender = 1
+
+append using `wives'
+
+* Clean
+replace birthy = . if birthy < 0
+replace edu    = . if edu    < 0
+keep if !missing(pid) & !missing(birthy) & !missing(edu)
+
+* Compute marriage age (annual: marry_year - birth year)
+gen marriage_age = marry_year - birthy
+keep if marriage_age > 10 & marriage_age < 60
+
+di _n "============================================================"
+di " Marriage-age distribution by marry_year and gender"
+di "============================================================"
+bysort marry_year gender: sum marriage_age, detail
+
+* Save person-level data before collapsing for cutoffs
+tempfile person_level
+save `person_level'
+
+
+* =============================================================================
+* 2. COMPUTE MARRIAGE-AGE P10–P90 CUTOFFS, ANNUALLY BY MARRY_YEAR × GENDER
+* =============================================================================
+
+collapse (p10) age_p10 = marriage_age (p90) age_p90 = marriage_age, ///
+    by(marry_year gender)
+
+label var age_p10 "10th percentile of marriage age"
+label var age_p90 "90th percentile of marriage age"
+
+di _n "=== Age cutoffs (p10–p90) by marry_year and gender ==="
+list, sep(2) noobs
+
+tempfile cutoffs
+save `cutoffs'
+
+* Reload person-level data and merge cutoffs
+use `person_level', clear
+merge m:1 marry_year gender using `cutoffs', keep(match) nogen
+
+* Keep peers: marriage age within p10–p90 (middle 80%)
+keep if marriage_age >= age_p10 & marriage_age <= age_p90
+
+di _n "=== Peers sample size by marry_year and gender ==="
+tab marry_year gender
+
+
+* =============================================================================
+* 2b. TABLE: P10–P90 CUTOFFS AND PEER SAMPLE SIZES (LaTeX)
+* =============================================================================
+
+preserve
+
+collapse (count) n_peers = edu (first) age_p10 age_p90, by(marry_year gender)
+reshape wide n_peers age_p10 age_p90, i(marry_year) j(gender)
+
+* gender 0 = Female, gender 1 = Male
+sort marry_year
+
+local dl = char(36)
+
+file open fh using "${output}/peers_p10p90_cutoffs.tex", write replace
+file write fh "\begin{table}[htbp]" _n
+file write fh "\centering" _n
+file write fh "\caption{Marriage-Age Peers: Age p10--p90 Range and Sample Size by Marriage Year and Gender}" _n
+file write fh "\label{tab:peers_p10p90}" _n
+file write fh "\begin{tabular}{l rrr rrr}" _n
+file write fh "\toprule" _n
+file write fh " & \multicolumn{3}{c}{Male} & \multicolumn{3}{c}{Female} \\" _n
+file write fh "\cmidrule(lr){2-4} \cmidrule(lr){5-7}" _n
+file write fh "Year & p10 & p90 & `dl'N`dl' & p10 & p90 & `dl'N`dl' \\" _n
+file write fh "\midrule" _n
+
+local nrows = _N
+forvalues i = 1/`nrows' {
+    local yr   = marry_year[`i']
+    local mp10 = string(age_p101[`i'], "%3.0f")
+    local mp90 = string(age_p901[`i'], "%3.0f")
+    local mn   = string(n_peers1[`i'], "%8.0fc")
+    local fp10 = string(age_p100[`i'], "%3.0f")
+    local fp90 = string(age_p900[`i'], "%3.0f")
+    local fn   = string(n_peers0[`i'], "%8.0fc")
+    file write fh "`yr' & `mp10' & `mp90' & `mn' & `fp10' & `fp90' & `fn' \\" _n
+}
+
+file write fh "\bottomrule" _n
+file write fh "\end{tabular}" _n
+file write fh "\end{table}" _n
+file close fh
+
+di _n "========================================"
+di " Table saved: peers_p10p90_cutoffs.tex"
+di "========================================"
+
+restore
+
+
+* =============================================================================
+* 3. EDUCATION COMPOSITION AMONG PEERS (edu level used directly)
+* =============================================================================
+
+* Use CFPS education level codes directly — no conversion from years needed
+* Typical CFPS edu codes:
+*   1 = Illiterate   2 = Primary   3 = Junior High   4 = Senior High
+*   5 = 3-yr College (大专)   6 = Bachelor's (本科)   7 = Master's/PhD
+
+drop if missing(edu)
+
+label define edu_lbl 1 "Illiterate" 2 "Primary" 3 "Junior High" ///
+                     4 "Senior High" 5 "College (3yr)" ///
+                     6 "Bachelor's" 7 "Master's/PhD"
+label values edu edu_lbl
+
+label define genderl 0 "Female" 1 "Male", replace
+label values gender genderl
+
+* --- Compute annual education shares ---
+contract marry_year gender edu, freq(n)
+bysort marry_year gender: egen total = sum(n)
+gen pct = n / total * 100
+format pct %5.1f
+
+* --- Console display ---
+di _n "============================================================"
+di " Education composition (%) among marriage-age peers (p10–p90)"
+di "============================================================"
+
+levelsof marry_year, local(years)
+foreach y of local years {
+    di _n "--- Marry year `y' ---"
+    list gender edu pct if marry_year == `y', sep(2) noobs abbrev(20)
+}
+
+* --- Export full long-format CSV ---
+export delimited using "${output}/peers_education_composition.csv", replace
+
+di _n "========================================"
+di " Data saved: peers_education_composition.csv"
+di "========================================"
+
+
+* =============================================================================
+* 4. LINE CHART: COLLEGE+ SHARE AMONG PEERS, BY GENDER AND MARRY_YEAR
+* =============================================================================
+
+preserve
+
+* College or above: edu >= 5 (3-yr college, bachelor's, master's/PhD)
+gen college_plus = (edu >= 5) if !missing(edu)
+
+* Weighted share: sum (college_plus * n) / total
+collapse (sum) n_college = n (first) total, by(marry_year gender college_plus)
+keep if college_plus == 1
+gen pct_college = n_college / total * 100
+format pct_college %5.1f
+
+* Only keep marry_years with at least 30 observations per gender
+keep if total >= 30
+
+keep marry_year gender pct_college
+reshape wide pct_college, i(marry_year) j(gender)
+rename pct_college0 pct_female
+rename pct_college1 pct_male
+
+label var pct_female "Female college+"
+label var pct_male   "Male college+"
+
+* Restrict display to 2010–2020
+keep if marry_year >= 2010 & marry_year <= 2020
+
+sort marry_year
+
+di _n "=== College+ share (%) by marry_year and gender ==="
+list, noobs abbrev(20)
+
+twoway (line pct_female marry_year, lcolor(cranberry) lwidth(medium)) ///
+       (line pct_male   marry_year, lcolor(navy)      lwidth(medium)), ///
+    ytitle("Share with college+ education (%)") ///
+    xtitle("Marriage year") ///
+    title("College+ education among marriage-age peers (p10–p90)", size(medium)) ///
+    legend(order(1 "Female" 2 "Male") rows(1) position(6) size(small)) ///
+    graphregion(color(white)) plotregion(color(white)) ///
+    scheme(s2color)
+
+graph export "${output}/peers_college_plus_trend.png", replace width(1200)
+
+di _n "========================================"
+di " Chart saved: peers_college_plus_trend.png"
+di "========================================"
+
+restore
+
+
+* =============================================================================
+* 5. LINE CHART: FULL EDUCATION DISTRIBUTION BY GENDER (SELECTED LEVELS)
+* =============================================================================
+
+* Line chart: share of each education level over time, by gender
+* (Separate twoway plots for female and male)
+
+preserve
+
+* Drop count/total columns before reshaping wide on gender
+drop n total
+
+* Restrict display to 2010–2020
+keep if marry_year >= 2010 & marry_year <= 2020
+
+sort marry_year gender edu
+
+reshape wide pct, i(marry_year edu) j(gender)
+rename pct0 pct_F
+rename pct1 pct_M
+
+sort marry_year edu
+
+* Plot separately for female and male
+* (two explicit twoway calls to avoid /// continuation issues inside loops)
+
+* --- Female ---
+twoway ///
+    (line pct_F marry_year if edu == 1, lcolor(gs12)      lwidth(thin))     ///
+    (line pct_F marry_year if edu == 2, lcolor(ltblue)    lwidth(thin))     ///
+    (line pct_F marry_year if edu == 3, lcolor(ebblue)    lwidth(medium))   ///
+    (line pct_F marry_year if edu == 4, lcolor(orange)    lwidth(medium))   ///
+    (line pct_F marry_year if edu == 5, lcolor(gold)      lwidth(medium))   ///
+    (line pct_F marry_year if edu == 6, lcolor(cranberry) lwidth(medthick)) ///
+    (line pct_F marry_year if edu == 7, lcolor(dknavy)    lwidth(medthick)), ///
+    ytitle("Share (%)") xtitle("Marriage year") ///
+    title("Education composition — Female peers (p10–p90)", size(medium)) ///
+    legend(order(1 "Illiterate" 2 "Primary" 3 "Junior High" ///
+                 4 "Senior High" 5 "College (3yr)" ///
+                 6 "Bachelor's" 7 "Master's/PhD") ///
+           rows(2) size(vsmall) position(6)) ///
+    graphregion(color(white)) plotregion(color(white)) ///
+    scheme(s2color)
+
+graph export "${output}/peers_edu_distribution_female.png", replace width(1200)
+
+di _n "========================================"
+di " Chart saved: peers_edu_distribution_female.png"
+di "========================================"
+
+* --- Male ---
+twoway ///
+    (line pct_M marry_year if edu == 1, lcolor(gs12)      lwidth(thin))     ///
+    (line pct_M marry_year if edu == 2, lcolor(ltblue)    lwidth(thin))     ///
+    (line pct_M marry_year if edu == 3, lcolor(ebblue)    lwidth(medium))   ///
+    (line pct_M marry_year if edu == 4, lcolor(orange)    lwidth(medium))   ///
+    (line pct_M marry_year if edu == 5, lcolor(gold)      lwidth(medium))   ///
+    (line pct_M marry_year if edu == 6, lcolor(cranberry) lwidth(medthick)) ///
+    (line pct_M marry_year if edu == 7, lcolor(dknavy)    lwidth(medthick)), ///
+    ytitle("Share (%)") xtitle("Marriage year") ///
+    title("Education composition — Male peers (p10–p90)", size(medium)) ///
+    legend(order(1 "Illiterate" 2 "Primary" 3 "Junior High" ///
+                 4 "Senior High" 5 "College (3yr)" ///
+                 6 "Bachelor's" 7 "Master's/PhD") ///
+           rows(2) size(vsmall) position(6)) ///
+    graphregion(color(white)) plotregion(color(white)) ///
+    scheme(s2color)
+
+graph export "${output}/peers_edu_distribution_male.png", replace width(1200)
+
+di _n "========================================"
+di " Chart saved: peers_edu_distribution_male.png"
+di "========================================"
+
+restore
